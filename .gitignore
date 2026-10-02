@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# Secrets
+.env
+.env.*
+
+# VeriCore local data
+backend/vericore.db
+backend/*.db
+backend/uploads/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+# Local backup archives
+*.zip
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.vscode/
