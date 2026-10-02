@@ -117,7 +117,7 @@ function App() {
   async function loadDocuments() {
     try {
       const response = await fetch(
-        "http://127.0.0.1:8000/api/documents"
+        "https://vericore.onrender.com/api/documents"
       );
 
       if (!response.ok) {
@@ -150,7 +150,7 @@ function App() {
   async function loadClaims() {
     try {
       const response = await fetch(
-        "http://127.0.0.1:8000/api/claims"
+        "https://vericore.onrender.com/api/claims"
       );
 
       if (!response.ok) {
@@ -179,8 +179,8 @@ function App() {
     try {
       const [conflictsResponse, decisionsResponse] =
         await Promise.all([
-          fetch("http://127.0.0.1:8000/api/conflicts"),
-          fetch("http://127.0.0.1:8000/api/verification/decisions"),
+          fetch("https://vericore.onrender.com/api/conflicts"),
+          fetch("https://vericore.onrender.com/api/verification/decisions"),
         ]);
 
       if (!conflictsResponse.ok) {
@@ -276,7 +276,7 @@ function App() {
       notify("Uploading documents...");
 
       const response = await fetch(
-        "http://127.0.0.1:8000/api/documents/upload",
+        "https://vericore.onrender.com/api/documents/upload",
         {
           method: "POST",
           body: formData,
@@ -387,7 +387,7 @@ function App() {
 
       for (const document of documents) {
         const response = await fetch(
-          `http://127.0.0.1:8000/api/claims/extract/${document.id}`,
+          `https://vericore.onrender.com/api/claims/extract/${document.id}`,
           { method: "POST" }
         );
 
@@ -409,7 +409,7 @@ function App() {
 
       // Run conflict detection after claims are extracted.
       const conflictResponse = await fetch(
-        "http://127.0.0.1:8000/api/conflicts/detect",
+        "https://vericore.onrender.com/api/conflicts/detect",
         { method: "POST" }
       );
 
@@ -473,7 +473,7 @@ function App() {
 
     try {
       const response = await fetch(
-        "http://127.0.0.1:8000/api/verification/decision",
+        "https://vericore.onrender.com/api/verification/decision",
         {
           method: "POST",
           headers: {
@@ -1850,7 +1850,7 @@ function Report() {
       setError("");
 
       const response = await fetch(
-        "http://127.0.0.1:8000/api/report"
+        "https://vericore.onrender.com/api/report"
       );
 
       if (response.status === 404) {
@@ -1882,7 +1882,7 @@ function Report() {
       setError("");
 
       const response = await fetch(
-        "http://127.0.0.1:8000/api/report/generate",
+        "https://vericore.onrender.com/api/report/generate",
         {
           method: "POST",
         }
@@ -2415,7 +2415,7 @@ function AuditTrail({
     async function loadBackendAudit() {
       try {
         const response = await fetch(
-          "http://127.0.0.1:8000/api/audit"
+          "https://vericore.onrender.com/api/audit"
         );
 
         if (!response.ok) {
@@ -2962,7 +2962,7 @@ function EvidenceBox({
 
     try {
       const response = await fetch(
-        `http://127.0.0.1:8000/api/evidence/retrieve/${claimId}`,
+        `https://vericore.onrender.com/api/evidence/retrieve/${claimId}`,
         { method: "POST" }
       );
 
