@@ -14,12 +14,25 @@ type Page =
   | "audit"
   | "settings";
 
+type DocumentPage = {
+  page: number;
+  text: string;
+};
+
 type DocumentItem = {
   id: string;
   name: string;
   type: string;
   status: string;
   pages: number;
+  uploadedAt?: string;
+  pageTexts?: DocumentPage[];
+};
+
+type ClaimEvidence = {
+  source?: string;
+  page?: number;
+  text?: string;
 };
 
 type ClaimItem = {
@@ -28,6 +41,7 @@ type ClaimItem = {
   status: string;
   source: string;
   page: number;
+  evidence?: ClaimEvidence;
 };
 
 type Conflict = {
@@ -138,6 +152,13 @@ function App() {
           pages: Array.isArray(doc.pages)
             ? doc.pages.length
             : Number(doc.pages || 0),
+          uploadedAt: doc.uploaded_at || "",
+          pageTexts: Array.isArray(doc.pages)
+            ? doc.pages.map((page: any) => ({
+                page: Number(page.page || 1),
+                text: String(page.text || ""),
+              }))
+            : [],
         }));
 
       setDocuments(backendDocuments);
@@ -166,6 +187,16 @@ function App() {
           status: claim.status || "UNVERIFIED",
           source: claim.source || "Unknown source",
           page: Number(claim.page || 1),
+          evidence:
+            claim.evidence &&
+            typeof claim.evidence === "object" &&
+            !Array.isArray(claim.evidence)
+              ? {
+                  source: claim.evidence.source,
+                  page: Number(claim.evidence.page || claim.page || 1),
+                  text: String(claim.evidence.text || ""),
+                }
+              : undefined,
         }));
 
       setClaims(backendClaims);
@@ -590,16 +621,27 @@ function App() {
       case "evidence":
         return (
           <Evidence
+            claims={claims}
             usedEvidence={usedEvidence}
             onUseEvidence={useEvidence}
           />
         );
 
       case "gaps":
-        return <EvidenceGaps />;
+        return (
+          <EvidenceGaps
+            conflicts={liveConflicts}
+            claims={claims}
+          />
+        );
 
       case "timeline":
-        return <Timeline />;
+        return (
+          <Timeline
+            documents={documents}
+            claims={claims}
+          />
+        );
 
       case "report":
         return <Report />;
@@ -1575,37 +1617,30 @@ function Conflicts({
 ========================================= */
 
 function Evidence({
+  claims,
   usedEvidence,
   onUseEvidence,
 }: {
+  claims: ClaimItem[];
   usedEvidence: string[];
-  onUseEvidence: (
-    source: string,
-    value: string
-  ) => void;
+  onUseEvidence: (source: string, value: string) => void;
 }) {
-  const evidence = [
-    {
-      source: "Manufacturer Manual",
-      value: "Maintenance required every 500 hours.",
-      page: "Page 14",
-    },
-    {
-      source: "Manufacturer Manual",
-      value: "Maximum operating temperature is 85°C.",
-      page: "Page 14",
-    },
-    {
-      source: "Inspection Report",
-      value: "Observed operating limit of 90°C.",
-      page: "Page 3",
-    },
-    {
-      source: "Maintenance Report",
-      value: "Previous maintenance performed at 500 hours.",
-      page: "Page 6",
-    },
-  ];
+  const evidence = claims
+    .map((claim) => {
+      const source = claim.evidence?.source || claim.source;
+      const page = Number(claim.evidence?.page || claim.page || 1);
+      const value = String(
+        claim.evidence?.text || claim.text || ""
+      ).trim();
+
+      return {
+        id: claim.id,
+        source,
+        value,
+        page: `Page ${page}`,
+      };
+    })
+    .filter((item) => item.value);
 
   return (
     <section>
@@ -1631,71 +1666,111 @@ function Evidence({
         </div>
       )}
 
-      <div className="evidence-list">
+      {evidence.length === 0 ? (
+        <div className="panel">
+          <strong>No source evidence available</strong>
+          <p className="muted">
+            Process the uploaded documents to populate evidence from the backend.
+          </p>
+        </div>
+      ) : (
+        <div className="evidence-list">
+          {evidence.map((item) => {
+            const used = usedEvidence.includes(
+              `${item.source}: ${item.value}`
+            );
 
-        {evidence.map((item) => {
-          const used = usedEvidence.includes(
-            `${item.source}: ${item.value}`
-          );
-
-          return (
-            <div
-              className={`evidence-card ${
-                used ? "selected" : ""
-              }`}
-              key={`${item.source}-${item.value}`}
-            >
-
-              <div className="evidence-source">
-                <span className="document-icon small">
-                  PDF
-                </span>
-
-                <div>
-                  <strong>
-                    {item.source}
-                  </strong>
-
-                  <span>
-                    {item.page}
-                  </span>
-                </div>
-              </div>
-
-              <p>
-                “{item.value}”
-              </p>
-
-              <button
-                className="btn secondary"
-                disabled={used}
-                onClick={() =>
-                  onUseEvidence(
-                    item.source,
-                    item.value
-                  )
-                }
+            return (
+              <div
+                className={`evidence-card ${
+                  used ? "selected" : ""
+                }`}
+                key={item.id}
               >
-                {used
-                  ? "Evidence selected"
-                  : "Use this evidence"}
-              </button>
 
-            </div>
-          );
-        })}
+                <div className="evidence-source">
+                  <span className="document-icon small">
+                    {item.source.toLowerCase().endsWith(".txt")
+                      ? "TXT"
+                      : "PDF"}
+                  </span>
 
-      </div>
+                  <div>
+                    <strong>
+                      {item.source}
+                    </strong>
+
+                    <span>
+                      {item.page}
+                    </span>
+                  </div>
+                </div>
+
+                <p>
+                  “{item.value}”
+                </p>
+
+                <button
+                  className="btn secondary"
+                  disabled={used}
+                  onClick={() =>
+                    onUseEvidence(
+                      item.source,
+                      item.value
+                    )
+                  }
+                >
+                  {used
+                    ? "Evidence selected"
+                    : "Use this evidence"}
+                </button>
+
+              </div>
+            );
+          })}
+        </div>
+      )}
 
     </section>
   );
 }
 
-/* =========================================
-   EVIDENCE GAPS
-========================================= */
+function EvidenceGaps({
+  conflicts,
+  claims,
+}: {
+  conflicts: Conflict[];
+  claims: ClaimItem[];
+}) {
+  const gapItems = [
+    ...conflicts.map((conflict) => ({
+      id: `conflict-${conflict.id}`,
+      status: "CONFLICTING",
+      title: conflict.title,
+      description: `${conflict.description} ${conflict.source1} vs ${conflict.source2}.`,
+    })),
+    ...claims
+      .filter(
+        (claim) =>
+          claim.status.toUpperCase() === "NEEDS_REVIEW"
+      )
+      .filter(
+        (claim) =>
+          !conflicts.some(
+            (conflict) =>
+              conflict.claimId1 === claim.id ||
+              conflict.claimId2 === claim.id
+          )
+      )
+      .map((claim) => ({
+        id: `claim-${claim.id}`,
+        status: "NEEDS REVIEW",
+        title: claim.source,
+        description:
+          "This claim is marked for human review and does not yet have a final verification decision.",
+      })),
+  ];
 
-function EvidenceGaps() {
   return (
     <section>
 
@@ -1704,131 +1779,187 @@ function EvidenceGaps() {
         description="Claims where available sources do not provide enough reliable evidence."
       />
 
-      <div className="gap-grid">
-
-        <div className="gap-card warning">
-
-          <div className="gap-icon">
-            ?
-          </div>
-
-          <div>
-            <span>
-              UNSUPPORTED
-            </span>
-
-            <h2>
-              Outdoor operating condition
-            </h2>
-
-            <p>
-              No source provides reliable evidence
-              confirming outdoor operation.
-            </p>
-          </div>
-
+      {gapItems.length === 0 ? (
+        <div className="panel">
+          <strong>No unresolved evidence gaps</strong>
+          <p className="muted">
+            The current backend data contains no unresolved conflicts or claims awaiting review.
+          </p>
         </div>
+      ) : (
+        <div className="gap-grid">
+          {gapItems.map((item) => (
+            <div
+              className={`gap-card ${
+                item.status === "CONFLICTING" ? "warning" : ""
+              }`}
+              key={item.id}
+            >
 
-        <div className="gap-card">
+              <div className="gap-icon">
+                {item.status === "CONFLICTING" ? "!" : "?"}
+              </div>
 
-          <div className="gap-icon">
-            !
-          </div>
+              <div>
+                <span>
+                  {item.status}
+                </span>
 
-          <div>
-            <span>
-              PARTIAL
-            </span>
+                <h2>
+                  {item.title}
+                </h2>
 
-            <h2>
-              Environmental conditions
-            </h2>
+                <p>
+                  {item.description}
+                </p>
+              </div>
 
-            <p>
-              Temperature information exists, but
-              humidity and altitude information is
-              missing.
-            </p>
-          </div>
-
+            </div>
+          ))}
         </div>
-
-      </div>
+      )}
 
     </section>
   );
 }
 
-/* =========================================
-   TIMELINE
-========================================= */
+function Timeline({
+  documents,
+  claims,
+}: {
+  documents: DocumentItem[];
+  claims: ClaimItem[];
+}) {
+  function parseSourceDate(document: DocumentItem) {
+    const fullText = (document.pageTexts || [])
+      .map((page) => page.text)
+      .join(" ");
 
-function Timeline() {
-  const events = [
-    {
-      year: "2024",
-      title: "Manufacturer specification",
-      text: "Maximum operating temperature documented as 85°C.",
-      source: "Manufacturer Manual",
-    },
-    {
-      year: "2025",
-      title: "Inspection observation",
-      text: "Inspection report records 90°C.",
-      source: "Inspection Report",
-    },
-    {
-      year: "2026",
-      title: "Maintenance record",
-      text: "Maintenance record references 85°C operating specification.",
-      source: "Maintenance Report",
-    },
-  ];
+    const longDateMatch = fullText.match(
+      /\b\d{1,2}\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4}\b/i
+    );
+
+    if (longDateMatch) {
+      const parsed = new Date(longDateMatch[0]);
+      if (!Number.isNaN(parsed.getTime())) {
+        return parsed;
+      }
+    }
+
+    const isoMatch = fullText.match(
+      /\b20\d{2}-\d{2}-\d{2}\b/
+    );
+
+    if (isoMatch) {
+      const parsed = new Date(isoMatch[0]);
+      if (!Number.isNaN(parsed.getTime())) {
+        return parsed;
+      }
+    }
+
+    if (document.uploadedAt) {
+      const parsed = new Date(document.uploadedAt);
+      if (!Number.isNaN(parsed.getTime())) {
+        return parsed;
+      }
+    }
+
+    return null;
+  }
+
+  const events = documents
+    .map((document) => {
+      const sourceClaims = claims.filter(
+        (claim) => claim.source === document.name
+      );
+
+      const date = parseSourceDate(document);
+
+      const summary = sourceClaims
+        .slice(0, 2)
+        .map((claim) => claim.text)
+        .filter(Boolean)
+        .join(" ");
+
+      return {
+        id: document.id,
+        date,
+        year: date
+          ? String(date.getFullYear())
+          : "Date unknown",
+        title: document.name,
+        text:
+          summary ||
+          `Source document with ${document.pages} page${
+            document.pages === 1 ? "" : "s"
+          }.`,
+        source: document.type || "SOURCE",
+      };
+    })
+    .sort((a, b) => {
+      const timeA = a.date ? a.date.getTime() : Number.MAX_SAFE_INTEGER;
+      const timeB = b.date ? b.date.getTime() : Number.MAX_SAFE_INTEGER;
+
+      if (timeA !== timeB) {
+        return timeA - timeB;
+      }
+
+      return a.title.localeCompare(b.title);
+    });
 
   return (
     <section>
 
       <PageHeading
         title="Timeline"
-        description="Track how claims and evidence change across source dates."
+        description="Track how source documents and extracted evidence change across source dates."
       />
 
-      <div className="timeline">
+      {events.length === 0 ? (
+        <div className="panel">
+          <strong>No timeline events available</strong>
+          <p className="muted">
+            Upload and process source documents to build the timeline.
+          </p>
+        </div>
+      ) : (
+        <div className="timeline">
 
-        {events.map((event) => (
-          <div
-            className="timeline-item"
-            key={event.year}
-          >
+          {events.map((event) => (
+            <div
+              className="timeline-item"
+              key={event.id}
+            >
 
-            <div className="timeline-year">
-              {event.year}
+              <div className="timeline-year">
+                {event.year}
+              </div>
+
+              <div className="timeline-line">
+                <span />
+              </div>
+
+              <div className="timeline-content">
+
+                <span className="eyebrow">
+                  {event.source}
+                </span>
+
+                <h2>
+                  {event.title}
+                </h2>
+
+                <p>
+                  {event.text}
+                </p>
+
+              </div>
+
             </div>
+          ))}
 
-            <div className="timeline-line">
-              <span />
-            </div>
-
-            <div className="timeline-content">
-
-              <span className="eyebrow">
-                {event.source}
-              </span>
-
-              <h2>
-                {event.title}
-              </h2>
-
-              <p>
-                {event.text}
-              </p>
-
-            </div>
-
-          </div>
-        ))}
-
-      </div>
+        </div>
+      )}
 
     </section>
   );
