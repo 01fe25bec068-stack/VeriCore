@@ -175,6 +175,25 @@ def extract_limit_value(text: str, property_name: str, limit_word: str):
         re.escape(property_name)
     )
 
+    # Alternate wording:
+    # "Temperature exceeded the 80°C maximum continuous operating limit"
+    if property_name == "temperature":
+        pattern = (
+            rf"{property_pattern}"
+            rf"[^0-9]{{0,40}}"
+            rf"(?:above|exceed(?:s|ed)?|over)"
+            rf"[^0-9]{{0,20}}"
+            rf"(\d+(?:\.\d+)?)"
+            rf"\s*°?\s*C\s+"
+            rf"{limit_word}"
+            rf"[^\n.]{{0,60}}\blimit\b"
+        )
+
+        match = re.search(pattern, text, re.IGNORECASE)
+
+        if match:
+            return float(match.group(1))
+
     # Property-specific limit phrase.
     pattern = (
         rf"\b{limit_word}\b"
