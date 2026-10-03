@@ -146,49 +146,32 @@ def extract_range_values(text: str, property_name: str):
 
     return None
 
-
-def extract_limit_value(text: str, property_name: str, limit_word: str):
-    """
-    Extract a maximum/minimum value tied to the property.
-
-    Example:
-        Maximum continuous operating temperature: 80°C.
-    """
-
-    if not text or not property_name:
-        return None
-
-    property_words = {
-        "temperature": r"(?:temperature|temp)",
-        "vibration": r"vibration",
-        "pressure": r"pressure",
-        "voltage": r"voltage",
-        "current": r"current",
-        "power": r"power",
-        "speed": r"speed",
-        "frequency": r"frequency",
-        "capacity": r"capacity",
-    }
-
-    property_pattern = property_words.get(
-        property_name,
-        re.escape(property_name)
-    )
-
-    # Property-specific limit phrase.
+    # Alternate wording:
+    # "Temperature exceeded the 80°C maximum continuous operating limit"
     pattern = (
-        rf"\b{limit_word}\b"
-        rf"(?:\s+\w+){{0,8}}"
-        rf"\s+{property_pattern}"
-        rf"[^0-9]{{0,50}}"
+        rf"{property_pattern}"
+        rf"[^0-9]{{0,60}}"
         rf"(\d+(?:\.\d+)?)"
+        rf"\s*°?\s*C"
+        rf"[^.\n]{{0,60}}"
+        rf"\b{limit_word}\b"
+        rf"(?:\s+\w+){{0,6}}"
+        rf"\b(?:operating\s+)?limit\b"
+        if property_name == "temperature"
+        else
+        rf"{property_pattern}"
+        rf"[^0-9]{{0,60}}"
+        rf"(\d+(?:\.\d+)?)"
+        rf"[^.\n]{{0,60}}"
+        rf"\b{limit_word}\b"
+        rf"(?:\s+\w+){{0,6}}"
+        rf"\blimit\b"
     )
 
     match = re.search(pattern, text, re.IGNORECASE)
 
     if match:
         return float(match.group(1))
-
     # Alternate wording:
     # maximum of 80°C for temperature
     pattern = (
@@ -202,15 +185,6 @@ def extract_limit_value(text: str, property_name: str, limit_word: str):
         rf"[^0-9]{{0,40}}"
         rf"(\d+(?:\.\d+)?)"
     )
-
-    match = re.search(pattern, text, re.IGNORECASE)
-
-    if match:
-        return float(match.group(1))
-
-    return None
-
-
 def extract_threshold_value(text: str, property_name: str):
     """
     Extract a threshold only when the threshold's numeric value is
