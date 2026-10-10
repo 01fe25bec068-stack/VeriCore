@@ -730,11 +730,11 @@ button:disabled {
 
   border-radius: 50%;
 
-  background:
-    conic-gradient(
-      #9ae878 0deg 277deg,
-      #30434d 277deg 360deg
-    );
+background: conic-gradient(
+  #9ae878 0deg 0deg,
+  #30434d 0deg 360deg
+);
+
 }
 
 .donut::before {

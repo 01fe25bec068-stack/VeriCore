@@ -1203,7 +1203,15 @@ function Dashboard({
 
           </div>
 
-          <div className="donut">
+          <div
+  className="donut"
+  style={{
+    background: `conic-gradient(
+      #9ae878 0deg ${supportedPercent * 3.6}deg,
+      #30434d ${supportedPercent * 3.6}deg 360deg
+    )`,
+  }}
+>
             <div>
               <strong>{supportedPercent}%</strong>
               <span>supported</span>
