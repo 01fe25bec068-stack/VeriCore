@@ -1448,9 +1448,49 @@ function Documents({
 
             </div>
 
-            <button className="more-button">
-              ⋯
-            </button>
+            
+
+<button
+  className="more-button"
+  title="Delete document"
+  onClick={async () => {
+    const confirmed = window.confirm(
+      `Delete "${doc.name}" and its associated claims?`
+    );
+
+    if (!confirmed) return;
+
+    try {
+      
+const response = await fetch(
+  `https://vericore.onrender.com/api/documents/${encodeURIComponent(doc.id)}`,
+  {
+    method: "DELETE",
+  }
+);
+
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.detail || "Could not delete document.");
+      }
+
+      alert(`${doc.name} deleted successfully.`);
+      window.location.reload();
+    } catch (error) {
+      alert(
+        error instanceof Error
+          ? error.message
+          : "Could not delete the document."
+      );
+    }
+  }}
+>
+  ⋯
+</button>
+
+
 
           </div>
         ))}

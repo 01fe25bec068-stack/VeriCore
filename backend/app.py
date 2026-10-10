@@ -970,6 +970,117 @@ def get_document(document_id: str):
 
     return {"success": True, "document": document}
 
+
+@app.delete("/api/documents/{document_id}")
+def delete_document(document_id: str):
+    global generated_report
+
+    document = documents.get(document_id)
+
+    if not document:
+        raise HTTPException(
+            status_code=404,
+            detail="Document not found."
+        )
+
+    filename = document.get("filename", "Unknown document")
+    extension = Path(filename).suffix.lower()
+    file_path = UPLOAD_DIR / f"{document_id}{extension}"
+
+    connection = get_connection()
+
+    try:
+        cursor = connection.cursor()
+
+        # Capture claim IDs BEFORE deleting the document.
+        rows = cursor.execute(
+            "SELECT id FROM claims WHERE document_id = ?",
+            (document_id,)
+        ).fetchall()
+
+        deleted_claim_ids = {
+            row["id"] for row in rows
+        }
+
+        # Record the deletion so the audit history is preserved.
+        event = {
+            "id": str(uuid.uuid4()),
+            "timestamp": now(),
+            "action": "DOCUMENT_DELETED",
+            "document_id": document_id,
+            "details": {
+                "filename": filename,
+                "deleted_claim_count": len(deleted_claim_ids)
+            }
+        }
+
+        cursor.execute("""
+            INSERT INTO audit_trail
+            (id, timestamp, action, document_id, details)
+            VALUES (?, ?, ?, ?, ?)
+        """, (
+            event["id"],
+            event["timestamp"],
+            event["action"],
+            event["document_id"],
+            safe_json(event["details"])
+        ))
+
+        # Foreign-key cascades delete associated pages, claims,
+        # conflicts, verification results and decisions.
+        cursor.execute(
+            "DELETE FROM documents WHERE id = ?",
+            (document_id,)
+        )
+
+        connection.commit()
+
+    except Exception as exc:
+        connection.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail="Could not delete the document. Check the backend logs."
+        ) from exc
+
+    finally:
+        connection.close()
+
+    # Update the in-memory state after the database succeeds.
+    documents.pop(document_id, None)
+
+    claims[:] = [
+        claim for claim in claims
+        if claim.get("document_id") != document_id
+    ]
+
+    verification_decisions[:] = [
+        decision for decision in verification_decisions
+        if decision.get("claim_id") not in deleted_claim_ids
+    ]
+
+    # Remove the uploaded file, if it exists.
+    try:
+        if file_path.is_file():
+            file_path.unlink()
+    except OSError:
+        # The database deletion succeeded; report file cleanup
+        # can be retried manually if necessary.
+        pass
+
+    # Preserve historical audit events and invalidate the current
+    # in-memory report so it cannot be mistaken for a fresh report.
+    audit_trail.append(event)
+    generated_report = None
+
+    return {
+        "success": True,
+        "message": "Document deleted successfully.",
+        "document_id": document_id,
+        "filename": filename,
+        "deleted_claims": len(deleted_claim_ids)
+    }
+
+
 @app.get("/api/documents/search")
 
 def search_documents(q: str):
