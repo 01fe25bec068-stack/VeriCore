@@ -1,815 +1,176 @@
+"""Rule-based cross-document conflict detection for VeriCore.
+
+This module identifies candidate disagreements and potential limit violations.
+It does not decide which source is correct; a human reviewer should resolve them.
+"""
+
 import re
+from typing import Any, Dict, List, Optional, Tuple
 
 
-# ============================================================
-# TEXT HELPERS
-# ============================================================
-
-def normalize_text(text: str):
-    return re.sub(r"\s+", " ", str(text or "")).strip().lower()
+def normalize_text(text: str) -> str:
+    text = str(text or "").lower().replace("°", " degree ")
+    return re.sub(r"\s+", " ", text).strip()
 
 
-def extract_numbers(text: str):
-    return re.findall(r"\d+(?:\.\d+)?", text or "")
+def _number(pattern: str, text: str) -> Optional[float]:
+    match = re.search(pattern, text, re.IGNORECASE)
+    if not match:
+        return None
+    try:
+        return float(match.group(1).replace(",", ""))
+    except (TypeError, ValueError):
+        return None
 
 
-def detect_property(text: str):
-    lower = normalize_text(text)
-
-    if "temperature" in lower or re.search(r"\btemp\b", lower):
-        return "temperature"
-
-    if "vibration" in lower:
-        return "vibration"
-
-    if "pressure" in lower:
-        return "pressure"
-
-    if "voltage" in lower:
-        return "voltage"
-
-    if re.search(r"\bcurrent\b", lower):
-        return "current"
-
-    if "power" in lower:
-        return "power"
-
-    if "speed" in lower:
-        return "speed"
-
-    if "frequency" in lower:
-        return "frequency"
-
-    if "capacity" in lower:
-        return "capacity"
-
+def detect_property(text: str) -> Optional[str]:
+    t = normalize_text(text)
+    # Check the more specific maintenance interval before generic properties.
+    if re.search(r"\b(inspect(?:ed|ion)?|service|maintenance|replace(?:ment)?)\b", t) and re.search(
+        r"\b(every|each|per)\b|\b\d+(?:\.\d+)?\s*(?:operating\s*)?hours?\b", t
+    ):
+        return "inspection_interval"
+    for prop, pattern in (
+        ("temperature", r"\btemperature\b|\btemp\b|\bthermal\b"),
+        ("vibration", r"\bvibration\b"),
+        ("pressure", r"\bpressure\b"),
+        ("voltage", r"\bvoltage\b"),
+        ("current", r"\bcurrent\b"),
+        ("power", r"\bpower\b"),
+        ("speed", r"\bspeed\b|\brpm\b"),
+        ("frequency", r"\bfrequency\b"),
+        ("capacity", r"\bcapacity\b"),
+    ):
+        if re.search(pattern, t):
+            return prop
     return None
 
 
-def extract_property_value(text: str, property_name: str):
-    """
-    Extract the numeric value associated with the detected property.
-
-    This avoids accidentally using section numbers such as:
-        "3. Safety Guidance ..."
-
-    as if they were engineering limits.
-    """
-
-    if not text or not property_name:
-        return None
-
+def _extract_value_with_unit(text: str, prop: str) -> Optional[float]:
+    t = normalize_text(text)
     patterns = {
-        "temperature": [
-            r"(?:temperature|temp)\s*(?:[:=]\s*)?"
-            r"(?:measured|reading(?:\s+was)?|is|at)?\s*"
-            r"(\d+(?:\.\d+)?)\s*°?\s*[CF]",
-            r"(?:temperature|temp)[^0-9]{0,40}"
-            r"(\d+(?:\.\d+)?)\s*°?\s*C",
-        ],
-        "vibration": [
-            r"vibration[^0-9]{0,40}"
-            r"(\d+(?:\.\d+)?)\s*mm/s",
-        ],
-        "pressure": [
-            r"pressure[^0-9]{0,40}"
-            r"(\d+(?:\.\d+)?)\s*(?:bar|kpa|pa)",
-        ],
-        "voltage": [
-            r"voltage[^0-9]{0,40}"
-            r"(\d+(?:\.\d+)?)\s*(?:v|kv|mv)",
-        ],
-        "current": [
-            r"current[^0-9]{0,40}"
-            r"(\d+(?:\.\d+)?)\s*(?:a|ma)",
-        ],
-        "power": [
-            r"power[^0-9]{0,40}"
-            r"(\d+(?:\.\d+)?)\s*(?:w|kw)",
-        ],
-        "speed": [
-            r"speed[^0-9]{0,40}"
-            r"(\d+(?:\.\d+)?)\s*rpm",
-        ],
-        "frequency": [
-            r"frequency[^0-9]{0,40}"
-            r"(\d+(?:\.\d+)?)\s*(?:hz|khz|mhz)",
-        ],
-        "capacity": [
-            r"capacity[^0-9]{0,40}"
-            r"(\d+(?:\.\d+)?)",
-        ],
+        "temperature": r"(-?\d+(?:\.\d+)?)\s*(?:degree\s*)?(?:celsius|c|fahrenheit|f)\b",
+        "vibration": r"(\d[\d,]*(?:\.\d+)?)\s*mm\s*/\s*s\b",
+        "pressure": r"(\d[\d,]*(?:\.\d+)?)\s*(?:kpa|pa|bar)\b",
+        "voltage": r"(\d[\d,]*(?:\.\d+)?)\s*(?:kv|mv|v)\b",
+        "current": r"(\d[\d,]*(?:\.\d+)?)\s*(?:ma|a)\b",
+        "power": r"(\d[\d,]*(?:\.\d+)?)\s*(?:kw|w)\b",
+        "speed": r"(\d[\d,]*(?:\.\d+)?)\s*rpm\b",
+        "frequency": r"(\d[\d,]*(?:\.\d+)?)\s*(?:khz|mhz|hz)\b",
+        "capacity": r"\bcapacity\D{0,25}(\d[\d,]*(?:\.\d+)?)",
     }
-
-    for pattern in patterns.get(property_name, []):
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            return float(match.group(1))
-
-    return None
+    return _number(patterns.get(prop, r"(?!)"), t)
 
 
-def extract_range_values(text: str, property_name: str):
-    """
-    Extract a normal operating range without using unrelated
-    document section numbers.
-    """
+def _extract_interval(text: str) -> Optional[float]:
+    t = normalize_text(text)
+    # Prefer values explicitly attached to hours; avoid unrelated section numbers.
+    return _number(
+        r"\b(?:every|each|per|after|at)\s+(\d[\d,]*(?:\.\d+)?)\s*(?:operating\s*)?hours?\b",
+        t,
+    ) or _number(r"\b(\d[\d,]*(?:\.\d+)?)\s*(?:operating\s*)?hours?\b", t)
 
-    if not text or not property_name:
+
+def parse_claim_fact(claim: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    text = str(claim.get("text") or claim.get("claim_text") or "")
+    if not text.strip():
         return None
-
-    unit_pattern = {
-        "temperature": r"°?\s*C",
-        "vibration": r"mm/s",
-        "pressure": r"(?:bar|kpa|pa)",
-        "voltage": r"(?:v|kv|mv)",
-        "current": r"(?:a|ma)",
-        "power": r"(?:w|kw)",
-        "speed": r"rpm",
-        "frequency": r"(?:hz|khz|mhz)",
-        "capacity": r"",
-    }.get(property_name, "")
-
-    if unit_pattern:
-        pattern = (
-            rf"(?:{property_name}|temp)"
-            rf"[^0-9]{{0,60}}"
-            rf"(\d+(?:\.\d+)?)\s*{unit_pattern}"
-            rf"\s*(?:to|-)\s*"
-            rf"(\d+(?:\.\d+)?)\s*{unit_pattern}"
-        )
-
-        match = re.search(pattern, text, re.IGNORECASE)
-
-        if match:
-            return float(match.group(1)), float(match.group(2))
-
-    return None
-
-
-def extract_limit_value(text: str, property_name: str, limit_word: str):
-    """
-    Extract a maximum/minimum value tied to the property.
-
-    Example:
-        Maximum continuous operating temperature: 80°C.
-    """
-
-    if not text or not property_name:
-        return None
-
-    property_words = {
-        "temperature": r"(?:temperature|temp)",
-        "vibration": r"vibration",
-        "pressure": r"pressure",
-        "voltage": r"voltage",
-        "current": r"current",
-        "power": r"power",
-        "speed": r"speed",
-        "frequency": r"frequency",
-        "capacity": r"capacity",
-    }
-
-    property_pattern = property_words.get(
-        property_name,
-        re.escape(property_name)
-    )
-
-    # Alternate wording:
-    # "Temperature exceeded the 80°C maximum continuous operating limit"
-    if property_name == "temperature":
-        pattern = (
-            rf"{property_pattern}"
-            rf"[^0-9]{{0,40}}"
-            rf"(?:above|exceed(?:s|ed)?|over)"
-            rf"[^0-9]{{0,20}}"
-            rf"(\d+(?:\.\d+)?)"
-            rf"\s*°?\s*C\s+"
-            rf"{limit_word}"
-            rf"[^\n.]{{0,60}}\blimit\b"
-        )
-
-        match = re.search(pattern, text, re.IGNORECASE)
-
-        if match:
-            return float(match.group(1))
-
-    # Property-specific limit phrase.
-    pattern = (
-        rf"\b{limit_word}\b"
-        rf"(?:\s+\w+){{0,8}}"
-        rf"\s+{property_pattern}"
-        rf"[^0-9]{{0,50}}"
-        rf"(\d+(?:\.\d+)?)"
-    )
-
-    match = re.search(pattern, text, re.IGNORECASE)
-
-    if match:
-        return float(match.group(1))
-
-    # Alternate wording:
-    # maximum of 80°C for temperature
-    pattern = (
-        rf"\b{limit_word}\b"
-        rf"[^0-9]{{0,40}}"
-        rf"(\d+(?:\.\d+)?)"
-        rf"\s*°?\s*C"
-        if property_name == "temperature"
-        else
-        rf"\b{limit_word}\b"
-        rf"[^0-9]{{0,40}}"
-        rf"(\d+(?:\.\d+)?)"
-    )
-
-    match = re.search(pattern, text, re.IGNORECASE)
-
-    if match:
-        return float(match.group(1))
-
-    return None
-
-
-def extract_threshold_value(text: str, property_name: str):
-    """
-    Extract a threshold only when the threshold's numeric value is
-    explicitly tied to the property.
-    """
-
-    if not text or not property_name:
-        return None
-
-    property_words = {
-        "temperature": r"(?:temperature|temp)",
-        "vibration": r"vibration",
-        "pressure": r"pressure",
-        "voltage": r"voltage",
-        "current": r"current",
-        "power": r"power",
-        "speed": r"speed",
-        "frequency": r"frequency",
-        "capacity": r"capacity",
-    }
-
-    property_pattern = property_words.get(
-        property_name,
-        re.escape(property_name)
-    )
-
-    pattern = (
-        rf"{property_pattern}"
-        rf"[^0-9]{{0,20}}"
-        rf"(?:above|below|exceed(?:s|ed)?)"
-        rf"[^0-9]{{0,20}}"
-        rf"(\d+(?:\.\d+)?)"
-    )
-
-    match = re.search(pattern, text, re.IGNORECASE)
-
-    if match:
-        return float(match.group(1))
-
-    pattern = (
-        rf"(?:above|below|exceed(?:s|ed)?)"
-        rf"[^0-9]{{0,20}}"
-        rf"(\d+(?:\.\d+)?)"
-        rf"[^A-Za-z0-9]{{0,20}}"
-        rf"{property_pattern}"
-    )
-
-    match = re.search(pattern, text, re.IGNORECASE)
-
-    if match:
-        return float(match.group(1))
-
-    return None
-
-
-def extract_threshold_rule(text: str, property_name: str):
-    """
-    Extract an explicit directional threshold rule.
-
-    Returns:
-        {"value": <number>, "direction": "above"|"below"} or None
-
-    Examples:
-        "Temperature above 80°C requires inspection." -> above, 80
-        "Normal vibration below 4.5 mm/s RMS." -> below, 4.5
-    """
-
-    if not text or not property_name:
-        return None
-
-    property_words = {
-        "temperature": r"(?:temperature|temp)",
-        "vibration": r"vibration",
-        "pressure": r"pressure",
-        "voltage": r"voltage",
-        "current": r"current",
-        "power": r"power",
-        "speed": r"speed",
-        "frequency": r"frequency",
-        "capacity": r"capacity",
-    }
-
-    property_pattern = property_words.get(
-        property_name,
-        re.escape(property_name)
-    )
-
-    # Property first:
-    # "vibration below 4.5 mm/s"
-    for direction in ("above", "below"):
-        pattern = (
-            rf"{property_pattern}"
-            rf"[^0-9]{{0,20}}"
-            rf"{direction}"
-            rf"[^0-9]{{0,20}}"
-            rf"(\d+(?:\.\d+)?)"
-        )
-
-        match = re.search(pattern, text, re.IGNORECASE)
-
-        if match:
-            return {
-                "value": float(match.group(1)),
-                "direction": direction,
-            }
-
-    # Direction first:
-    # "above 80°C temperature ..."
-    for direction in ("above", "below"):
-        pattern = (
-            rf"{direction}"
-            rf"[^0-9]{{0,20}}"
-            rf"(\d+(?:\.\d+)?)"
-            rf"[^A-Za-z0-9]{{0,20}}"
-            rf"{property_pattern}"
-        )
-
-        match = re.search(pattern, text, re.IGNORECASE)
-
-        if match:
-            return {
-                "value": float(match.group(1)),
-                "direction": direction,
-            }
-
-    return None
-
-
-# ============================================================
-# CLAIM FACT EXTRACTION
-# ============================================================
-
-def parse_claim_fact(claim: dict):
-    text = claim.get("text", "")
     lower = normalize_text(text)
-
-    property_name = detect_property(text)
-
-    if not property_name:
+    prop = detect_property(text)
+    if not prop:
         return None
 
-    # --------------------------------------------------------
-    # 1. Structured system-log observation
-    # --------------------------------------------------------
+    if prop == "inspection_interval":
+        value = _extract_interval(text)
+        if value is None:
+            return None
+        return {"property": prop, "role": "INTERVAL", "value": value, "document_id": claim.get("document_id"), "claim": claim}
 
-    if "|" in text:
+    value = _extract_value_with_unit(text, prop)
+    if value is None:
+        return None
 
-        value = extract_property_value(
-            text,
-            property_name
-        )
+    # Detect directional rules like "normal vibration below 4.5 mm/s RMS".
+    direction_match = re.search(r"\b(above|below|exceed(?:s|ed)?)\b", lower)
+    if direction_match and ("normal" in lower or "threshold" in lower or "requires inspection" in lower or "require inspection" in lower):
+        direction = "above" if direction_match.group(1).startswith("exceed") else direction_match.group(1)
+        return {"property": prop, "role": "THRESHOLD_RULE", "value": value, "direction": direction, "document_id": claim.get("document_id"), "claim": claim}
 
-        if value is not None:
-
-            return {
-                "property": property_name,
-                "role": "OBSERVED",
-                "value": value,
-                "document_id": claim.get("document_id"),
-                "claim": claim
-            }
-
-    # --------------------------------------------------------
-    # 2. Normal operating range
-    # --------------------------------------------------------
-
-    if "normal" in lower:
-
-        value_range = extract_range_values(
-            text,
-            property_name
-        )
-
-        if value_range:
-
-            return {
-                "property": property_name,
-                "role": "NORMAL_RANGE",
-                "minimum": value_range[0],
-                "maximum": value_range[1],
-                "document_id": claim.get("document_id"),
-                "claim": claim
-            }
-
-    # --------------------------------------------------------
-    # 3. Maximum limit
-    # --------------------------------------------------------
-
-    if (
-        "maximum" in lower
-        or "max continuous" in lower
-        or re.search(r"\bmax\b", lower)
+    # Explicit maximum/minimum wording, plus generic "temperature limit: 95°C".
+    if re.search(r"\b(max(?:imum)?|upper limit|maximum limit)\b", lower) or (
+        re.search(r"\blimit\b", lower) and not re.search(r"\b(min(?:imum)?|lower limit)\b", lower)
     ):
+        return {"property": prop, "role": "MAX_LIMIT", "value": value, "document_id": claim.get("document_id"), "claim": claim}
+    if re.search(r"\b(min(?:imum)?|lower limit)\b", lower):
+        return {"property": prop, "role": "MIN_LIMIT", "value": value, "document_id": claim.get("document_id"), "claim": claim}
 
-        value = extract_limit_value(
-            text,
-            property_name,
-            "maximum"
-        )
+    # An observed/measured reading is different from a stated limit.
+    if re.search(r"\b(measured|measurement|reading|observed|recorded|actual)\b", lower) or "|" in text:
+        return {"property": prop, "role": "OBSERVED", "value": value, "document_id": claim.get("document_id"), "claim": claim}
 
-        if value is not None:
-
-            return {
-                "property": property_name,
-                "role": "MAX_LIMIT",
-                "value": value,
-                "document_id": claim.get("document_id"),
-                "claim": claim
-            }
-
-    # --------------------------------------------------------
-    # 4. Minimum limit
-    # --------------------------------------------------------
-
-    if (
-        "minimum" in lower
-        or re.search(r"\bmin(?:imum)?\b", lower)
-    ):
-
-        value = extract_limit_value(
-            text,
-            property_name,
-            "minimum"
-        )
-
-        if value is not None:
-
-            return {
-                "property": property_name,
-                "role": "MIN_LIMIT",
-                "value": value,
-                "document_id": claim.get("document_id"),
-                "claim": claim
-            }
-
-    # --------------------------------------------------------
-    # 5. General observed measurement
-    # --------------------------------------------------------
-
-    observed_value = extract_property_value(
-        text,
-        property_name
-    )
-
-    if (
-        observed_value is not None
-        and any(
-            word in lower
-            for word in [
-                "measured",
-                "reading",
-                "observed",
-                "recorded",
-                "value",
-            ]
-        )
-    ):
-
-        return {
-            "property": property_name,
-            "role": "OBSERVED",
-            "value": observed_value,
-            "document_id": claim.get("document_id"),
-            "claim": claim
-        }
-
-    # --------------------------------------------------------
-    # 6. Explicit threshold / rule
-    # --------------------------------------------------------
-
-    if (
-        "above" in lower
-        or "below" in lower
-        or "exceed" in lower
-        or "exceeded" in lower
-    ):
-
-        threshold = extract_threshold_rule(
-            text,
-            property_name
-        )
-
-        if threshold is not None:
-
-            return {
-                "property": property_name,
-                "role": "THRESHOLD_RULE",
-                "value": threshold["value"],
-                "direction": threshold["direction"],
-                "document_id": claim.get("document_id"),
-                "claim": claim
-            }
-
+    # Treat a plain "normal vibration below X" as a directional threshold.
+    if "normal" in lower and re.search(r"\b(below|under|less than)\b", lower):
+        return {"property": prop, "role": "THRESHOLD_RULE", "value": value, "direction": "below", "document_id": claim.get("document_id"), "claim": claim}
     return None
 
 
-# ============================================================
-# PAIRWISE COMPARISON
-# ============================================================
-
-def detect_pair_issue(fact_a: dict, fact_b: dict):
-
-    if not fact_a or not fact_b:
+def detect_pair_issue(fact_a: Dict[str, Any], fact_b: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    if not fact_a or not fact_b or fact_a["property"] != fact_b["property"]:
+        return None
+    # Only compare across distinct known documents. If IDs are absent, use source/filename.
+    a, b = fact_a.get("claim", {}), fact_b.get("claim", {})
+    doc_a = fact_a.get("document_id") or a.get("source") or a.get("filename")
+    doc_b = fact_b.get("document_id") or b.get("source") or b.get("filename")
+    if doc_a and doc_b and doc_a == doc_b:
         return None
 
-    if fact_a["property"] != fact_b["property"]:
-        return None
+    ra, rb = fact_a["role"], fact_b["role"]
+    va, vb = fact_a["value"], fact_b["value"]
+    prop = fact_a["property"]
 
-    # Only cross-document comparisons belong in
-    # multi-source conflict detection.
-    if fact_a.get("document_id") == fact_b.get("document_id"):
-        return None
+    if ra == rb == "INTERVAL" and va != vb:
+        return {"is_conflict": True, "status": "CONFLICT", "reason": f"Different documents specify different inspection/maintenance intervals ({va:g} vs {vb:g} hours).", "property": [prop], "values_a": [str(va)], "values_b": [str(vb)]}
 
-    # --------------------------------------------------------
-    # OBSERVED value vs MAX limit
-    # --------------------------------------------------------
+    if ra == rb == "MAX_LIMIT" and va != vb:
+        return {"is_conflict": True, "status": "CONFLICT", "reason": f"Different source documents specify different maximum limits for {prop} ({va:g} vs {vb:g}).", "property": [prop], "values_a": [str(va)], "values_b": [str(vb)]}
+    if ra == rb == "MIN_LIMIT" and va != vb:
+        return {"is_conflict": True, "status": "CONFLICT", "reason": f"Different source documents specify different minimum limits for {prop} ({va:g} vs {vb:g}).", "property": [prop], "values_a": [str(va)], "values_b": [str(vb)]}
+    if ra == rb == "THRESHOLD_RULE" and (va != vb or fact_a.get("direction") != fact_b.get("direction")):
+        return {"is_conflict": True, "status": "CONFLICT", "reason": f"Different source documents specify different {prop} thresholds.", "property": [prop], "values_a": [f"{fact_a.get('direction')} {va:g}"], "values_b": [f"{fact_b.get('direction')} {vb:g}"]}
 
-    if (
-        fact_a["role"] == "OBSERVED"
-        and fact_b["role"] == "MAX_LIMIT"
-        and fact_a["value"] > fact_b["value"]
-    ):
-
-        return {
-            "is_conflict": True,
-            "status": "POTENTIAL_VIOLATION",
-            "reason": (
-                "An observed value exceeds the maximum "
-                "documented limit."
-            ),
-            "property": [fact_a["property"]],
-            "limit": fact_b["value"],
-            "observed_value": fact_a["value"]
-        }
-
-    if (
-        fact_b["role"] == "OBSERVED"
-        and fact_a["role"] == "MAX_LIMIT"
-        and fact_b["value"] > fact_a["value"]
-    ):
-
-        return {
-            "is_conflict": True,
-            "status": "POTENTIAL_VIOLATION",
-            "reason": (
-                "An observed value exceeds the maximum "
-                "documented limit."
-            ),
-            "property": [fact_a["property"]],
-            "limit": fact_a["value"],
-            "observed_value": fact_b["value"]
-        }
-
-    # --------------------------------------------------------
-    # OBSERVED value vs MIN limit
-    # --------------------------------------------------------
-
-    if (
-        fact_a["role"] == "OBSERVED"
-        and fact_b["role"] == "MIN_LIMIT"
-        and fact_a["value"] < fact_b["value"]
-    ):
-
-        return {
-            "is_conflict": True,
-            "status": "POTENTIAL_VIOLATION",
-            "reason": (
-                "An observed value falls below the minimum "
-                "documented limit."
-            ),
-            "property": [fact_a["property"]],
-            "limit": fact_b["value"],
-            "observed_value": fact_a["value"]
-        }
-
-    if (
-        fact_b["role"] == "OBSERVED"
-        and fact_a["role"] == "MIN_LIMIT"
-        and fact_b["value"] < fact_a["value"]
-    ):
-
-        return {
-            "is_conflict": True,
-            "status": "POTENTIAL_VIOLATION",
-            "reason": (
-                "An observed value falls below the minimum "
-                "documented limit."
-            ),
-            "property": [fact_a["property"]],
-            "limit": fact_a["value"],
-            "observed_value": fact_b["value"]
-        }
-
-    # --------------------------------------------------------
-    # OBSERVED value vs directional threshold rule
-    # --------------------------------------------------------
-    #
-    # A "below X" rule acts as an upper threshold:
-    #   observed > X => violation
-    #
-    # An "above X" rule is treated as a trigger/inspection
-    # condition rather than a minimum operating requirement.
-    #
-    # Therefore:
-    #   "Temperature above 80°C requires inspection"
-    #
-    # does NOT make 74°C or 78°C a violation.
-    #
-    # But:
-    #   "Normal vibration below 4.5 mm/s"
-    #
-    # DOES make 5.1 mm/s a violation.
-
-    if (
-        fact_a["role"] == "OBSERVED"
-        and fact_b["role"] == "THRESHOLD_RULE"
-    ):
-
-        direction = fact_b.get("direction")
-
-        if (
-            direction == "below"
-            and fact_a["value"] > fact_b["value"]
-        ):
-
-            return {
-                "is_conflict": True,
-                "status": "POTENTIAL_VIOLATION",
-                "reason": (
-                    "An observed value exceeds the documented "
-                    "threshold."
-                ),
-                "property": [fact_a["property"]],
-                "limit": fact_b["value"],
-                "observed_value": fact_a["value"]
-            }
-
-    if (
-        fact_b["role"] == "OBSERVED"
-        and fact_a["role"] == "THRESHOLD_RULE"
-    ):
-
-        direction = fact_a.get("direction")
-
-        if (
-            direction == "below"
-            and fact_b["value"] > fact_a["value"]
-        ):
-
-            return {
-                "is_conflict": True,
-                "status": "POTENTIAL_VIOLATION",
-                "reason": (
-                    "An observed value exceeds the documented "
-                    "threshold."
-                ),
-                "property": [fact_a["property"]],
-                "limit": fact_a["value"],
-                "observed_value": fact_b["value"]
-            }
-
-    # --------------------------------------------------------
-    # MAX LIMIT vs MAX LIMIT
-    # --------------------------------------------------------
-
-    if (
-        fact_a["role"] == "MAX_LIMIT"
-        and fact_b["role"] == "MAX_LIMIT"
-        and fact_a["value"] != fact_b["value"]
-    ):
-
-        return {
-            "is_conflict": True,
-            "status": "CONFLICT",
-            "reason": (
-                "Different source documents specify "
-                "different maximum limits for the same property."
-            ),
-            "property": [fact_a["property"]],
-            "values_a": [str(fact_a["value"])],
-            "values_b": [str(fact_b["value"])]
-        }
-
-    # --------------------------------------------------------
-    # MIN LIMIT vs MIN LIMIT
-    # --------------------------------------------------------
-
-    if (
-        fact_a["role"] == "MIN_LIMIT"
-        and fact_b["role"] == "MIN_LIMIT"
-        and fact_a["value"] != fact_b["value"]
-    ):
-
-        return {
-            "is_conflict": True,
-            "status": "CONFLICT",
-            "reason": (
-                "Different source documents specify "
-                "different minimum limits for the same property."
-            ),
-            "property": [fact_a["property"]],
-            "values_a": [str(fact_a["value"])],
-            "values_b": [str(fact_b["value"])]
-        }
-
+    # Observed values that exceed explicit limits/thresholds are potential violations.
+    observed, rule = (fact_a, fact_b) if ra == "OBSERVED" else ((fact_b, fact_a) if rb == "OBSERVED" else (None, None))
+    if observed and rule:
+        ov, rv = observed["value"], rule["value"]
+        violation = (rule["role"] == "MAX_LIMIT" and ov > rv) or (rule["role"] == "MIN_LIMIT" and ov < rv) or (rule["role"] == "THRESHOLD_RULE" and rule.get("direction") == "below" and ov > rv)
+        if violation:
+            return {"is_conflict": True, "status": "POTENTIAL_VIOLATION", "reason": f"An observed {prop} value ({ov:g}) violates a documented limit/threshold ({rv:g}).", "property": [prop], "limit": rv, "observed_value": ov}
     return None
 
 
-# ============================================================
-# MAIN CONFLICT DETECTION
-# ============================================================
-
-def detect_conflict(claim_a: dict, claim_b: dict):
-
-    fact_a = parse_claim_fact(claim_a)
-    fact_b = parse_claim_fact(claim_b)
-
+def detect_conflict(claim_a: Dict[str, Any], claim_b: Dict[str, Any]) -> Dict[str, Any]:
+    fact_a, fact_b = parse_claim_fact(claim_a), parse_claim_fact(claim_b)
     if not fact_a or not fact_b:
-
-        return {
-            "is_conflict": False,
-            "status": "NO_CONFLICT",
-            "reason": (
-                "The claims do not contain comparable "
-                "structured facts."
-            )
-        }
-
-    result = detect_pair_issue(
-        fact_a,
-        fact_b
-    )
-
-    if result:
-        return result
-
-    return {
-        "is_conflict": False,
-        "status": "NO_CONFLICT",
-        "reason": (
-            "No direct contradiction or limit violation "
-            "was detected."
-        )
-    }
+        return {"is_conflict": False, "status": "NO_CONFLICT", "reason": "The claims do not contain comparable structured facts."}
+    result = detect_pair_issue(fact_a, fact_b)
+    return result or {"is_conflict": False, "status": "NO_CONFLICT", "reason": "No direct contradiction or limit violation was detected."}
 
 
-def detect_conflicts(claims: list):
-
-    conflicts = []
-
+def detect_conflicts(claims: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    conflicts: List[Dict[str, Any]] = []
     for i in range(len(claims)):
-
         for j in range(i + 1, len(claims)):
-
-            claim_a = claims[i]
-            claim_b = claims[j]
-
-            if claim_a.get("id") == claim_b.get("id"):
+            claim_a, claim_b = claims[i], claims[j]
+            if claim_a.get("id") is not None and claim_a.get("id") == claim_b.get("id"):
                 continue
-
-            result = detect_conflict(
-                claim_a,
-                claim_b
-            )
-
+            result = detect_conflict(claim_a, claim_b)
             if not result.get("is_conflict"):
                 continue
-
             conflicts.append({
-                "id": (
-                    f"{claim_a.get('id')}-"
-                    f"{claim_b.get('id')}"
-                ),
+                "id": f"{claim_a.get('id', i)}-{claim_b.get('id', j)}",
                 "claim_a": claim_a,
                 "claim_b": claim_b,
                 "conflict": result,
-                "reason": result.get(
-                    "reason",
-                    "Conflicting information detected."
-                )
+                "reason": result.get("reason", "Conflicting information detected."),
             })
-
     return conflicts

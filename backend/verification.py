@@ -1,28 +1,14 @@
+
 # ============================================================
 # VERIFICATION
 # ============================================================
-# Purpose:
-# Determine whether a claim is verified, conflicting, partially
-# supported, or unresolved using:
-#
-#   1. Detected conflicts
-#   2. Retrieved supporting evidence
-#   3. Source/page traceability
-#
-# Important:
-# The evidence automatically attached during claim extraction is
-# the claim's own source passage. That proves provenance, but it
-# is NOT independent verification. We therefore ignore an exact
-# self-copy of the claim when evaluating supporting evidence.
-#
-# Human review remains a separate layer.
-# A human decision can later override the automated result.
+# Candidate evidence is not automatically confirmed support.
+# Conflicts remain reviewable by a human.
+# Human decisions are handled separately by app.py.
 # ============================================================
 
-
 def get_related_conflicts(claim_id: str, conflicts: list):
-    """Return all conflicts involving a particular claim."""
-
+    """Return conflicts involving this claim."""
     related = []
 
     for conflict in conflicts:
@@ -39,307 +25,165 @@ def get_related_conflicts(claim_id: str, conflicts: list):
 
 
 def normalize_evidence(evidence):
-    """Convert evidence into a consistent list format."""
-
-    if not evidence:
-        return []
-
+    """Normalize evidence into a list of dictionaries."""
     if isinstance(evidence, dict):
         return [evidence]
 
     if isinstance(evidence, list):
-        return [
-            item
-            for item in evidence
-            if isinstance(item, dict)
-        ]
+        return [item for item in evidence if isinstance(item, dict)]
 
     return []
 
 
 def _clean(value):
-    """Normalize text for safe comparison."""
-
-    if value is None:
-        return ""
-
-    return " ".join(str(value).split()).strip().lower()
+    """Normalize whitespace and case for comparisons."""
+    return " ".join(str(value or "").split()).strip().lower()
 
 
-def is_self_evidence(claim: dict, evidence_item: dict):
-    """
-    Return True when an evidence item is simply the same passage
-    from which the claim itself was extracted.
-
-    Such evidence is useful for provenance, but must not count as
-    corroborating evidence.
-    """
-
+def is_self_evidence(claim: dict, evidence_item: dict) -> bool:
+    """Identify the exact source passage from which a claim came."""
     claim_text = _clean(claim.get("text"))
     evidence_text = _clean(evidence_item.get("text"))
 
-    if not claim_text or not evidence_text:
+    if not claim_text or claim_text != evidence_text:
         return False
 
-    if claim_text != evidence_text:
-        return False
+    claim_doc = claim.get("document_id")
+    evidence_doc = evidence_item.get("document_id")
 
-    claim_document_id = claim.get("document_id")
-    evidence_document_id = evidence_item.get("document_id")
+    same_document = bool(claim_doc and evidence_doc and claim_doc == evidence_doc)
 
     claim_source = _clean(claim.get("source"))
     evidence_source = _clean(evidence_item.get("source"))
-
-    same_document = (
-        bool(claim_document_id)
-        and bool(evidence_document_id)
-        and claim_document_id == evidence_document_id
-    )
-
-    same_source = (
-        bool(claim_source)
-        and bool(evidence_source)
-        and claim_source == evidence_source
-    )
+    same_source = bool(claim_source and evidence_source and claim_source == evidence_source)
 
     claim_page = claim.get("page")
     evidence_page = evidence_item.get("page")
+    same_page = claim_page is not None and evidence_page is not None and claim_page == evidence_page
 
-    same_page = (
-        claim_page is not None
-        and evidence_page is not None
-        and claim_page == evidence_page
-    )
-
-    return (same_document or same_source) and same_page
+    return same_page and (same_document or same_source)
 
 
 def analyze_evidence(claim: dict):
     """
-    Analyze actual supporting evidence attached to a claim.
+    Count candidate passages and independent sources.
 
-    The claim's own exact source passage is excluded because it
-    provides provenance, not corroboration.
-
-    Returns:
-        evidence_count
-        source_count
-        independent_source_count
-        has_direct_support
+    IMPORTANT: Independent origin and lexical relevance do not
+    establish semantic support. Candidates remain unconfirmed
+    unless a separate trusted support-checking step confirms them.
     """
-
-    raw_evidence = normalize_evidence(
-        claim.get("evidence")
-    )
-
-    claim_document_id = claim.get("document_id")
-    claim_source = _clean(claim.get("source"))
-
-    supporting_evidence = []
-
-    for item in raw_evidence:
-        if not is_self_evidence(claim, item):
-            supporting_evidence.append(item)
+    evidence = normalize_evidence(claim.get("evidence"))
+    candidates = [
+        item for item in evidence
+        if not is_self_evidence(claim, item)
+    ]
 
     source_documents = set()
     independent_documents = set()
-    has_direct_support = False
 
-    for item in supporting_evidence:
-        evidence_document_id = item.get("document_id")
-        evidence_source = _clean(item.get("source"))
+    claim_doc = claim.get("document_id")
+    claim_source = _clean(claim.get("source"))
 
-        source_key = (
-            evidence_document_id
-            or evidence_source
-        )
+    for item in candidates:
+        evidence_doc = item.get("document_id")
+        evidence_source = _clean(item.get("source") or item.get("filename"))
 
+        source_key = evidence_doc or evidence_source
         if source_key:
             source_documents.add(str(source_key))
 
-        same_document = (
-            bool(claim_document_id)
-            and bool(evidence_document_id)
-            and evidence_document_id == claim_document_id
-        )
+        same_document = bool(claim_doc and evidence_doc and claim_doc == evidence_doc)
+        same_source = bool(claim_source and evidence_source and claim_source == evidence_source)
 
-        same_source = (
-            bool(claim_source)
-            and bool(evidence_source)
-            and evidence_source == claim_source
-        )
-
-        if same_document or same_source:
-            has_direct_support = True
-        else:
-            independent_key = (
-                evidence_document_id
-                or evidence_source
-            )
-
-            if independent_key:
-                independent_documents.add(
-                    str(independent_key)
-                )
+        if not same_document and not same_source and source_key:
+            independent_documents.add(str(source_key))
 
     return {
-        "evidence_count": len(supporting_evidence),
+        "evidence_count": len(candidates),
         "source_count": len(source_documents),
-        "independent_source_count": len(
-            independent_documents
-        ),
-        "has_direct_support": has_direct_support
+        "independent_source_count": len(independent_documents),
+        "has_direct_support": False,
+        "support_confirmed": False,
     }
 
 
-def determine_verification_status(
-    claim: dict,
-    conflicts: list
-):
-    """
-    Determine automated verification status.
+def determine_verification_status(claim: dict, conflicts: list):
+    """Return a conservative automated verification assessment."""
 
-    Priority:
-
-        1. Conflict
-        2. Independent supporting evidence
-        3. Direct supporting evidence from the same document
-        4. Traceable source only
-        5. Unresolved
-    """
-
-    claim_id = claim.get("id")
-
-    # --------------------------------------------------------
-    # 1. Conflict takes priority.
-    # --------------------------------------------------------
-
-    related_conflicts = get_related_conflicts(
-        claim_id,
-        conflicts
-    )
+    related_conflicts = get_related_conflicts(claim.get("id"), conflicts)
 
     if related_conflicts:
         return {
             "status": "CONFLICTING",
             "confidence": 0.0,
-            "reason": (
-                "Conflicting information was detected "
-                "for this claim. Human review is required."
-            ),
-            "conflict_count": len(related_conflicts)
+            "reason": "Conflicting information was detected. Human review is required.",
+            "conflict_count": len(related_conflicts),
+            "evidence_type": "CONFLICT",
         }
-
-    # --------------------------------------------------------
-    # 2. Analyze actual supporting evidence.
-    # --------------------------------------------------------
 
     evidence_info = analyze_evidence(claim)
 
-    evidence_count = evidence_info[
-        "evidence_count"
-    ]
-
-    independent_source_count = evidence_info[
-        "independent_source_count"
-    ]
-
-    has_direct_support = evidence_info[
-        "has_direct_support"
-    ]
-
-    # --------------------------------------------------------
-    # 3. Independent corroboration.
-    # --------------------------------------------------------
-
-    if independent_source_count > 0:
+    # Only an explicit support confirmation may qualify a claim
+    # for VERIFIED. Retrieval scores and source counts alone do not.
+    if claim.get("evidence_support_confirmed") is True:
         return {
             "status": "VERIFIED",
             "confidence": 0.95,
-            "reason": (
-                "The claim is supported by evidence "
-                "from an independent source document."
-            ),
+            "reason": "A separate support-checking step explicitly confirmed the evidence.",
             "conflict_count": 0,
-            "evidence_count": evidence_count,
-            "independent_source_count": independent_source_count,
-            "evidence_type": "INDEPENDENT"
+            "evidence_count": evidence_info["evidence_count"],
+            "independent_source_count": evidence_info["independent_source_count"],
+            "evidence_type": "CONFIRMED_SUPPORT",
         }
-
-    # --------------------------------------------------------
-    # 4. Supporting passage from the same source document.
-    # --------------------------------------------------------
-
-    if has_direct_support:
-        return {
-            "status": "VERIFIED",
-            "confidence": 0.85,
-            "reason": (
-                "The claim is supported by a separate "
-                "traceable passage in its source document."
-            ),
-            "conflict_count": 0,
-            "evidence_count": evidence_count,
-            "independent_source_count": 0,
-            "evidence_type": "DIRECT_SOURCE"
-        }
-
-    # --------------------------------------------------------
-    # 5. No corroborating evidence, but source/page exists.
-    # --------------------------------------------------------
 
     source = claim.get("source")
     page = claim.get("page")
 
+    if evidence_info["evidence_count"] > 0:
+        return {
+            "status": "PARTIALLY_SUPPORTED",
+            "confidence": 0.5,
+            "reason": (
+                "Candidate passages were retrieved, but their semantic "
+                "support has not been confirmed."
+            ),
+            "conflict_count": 0,
+            "evidence_count": evidence_info["evidence_count"],
+            "independent_source_count": evidence_info["independent_source_count"],
+            "evidence_type": "CANDIDATE_ONLY",
+        }
+
     if source and page is not None:
         return {
             "status": "PARTIALLY_SUPPORTED",
-            "confidence": 0.50,
-            "reason": (
-                "The claim has a traceable source and page, "
-                "but no separate supporting evidence was found."
-            ),
+            "confidence": 0.5,
+            "reason": "The claim has a traceable source and page, but no separate supporting evidence was confirmed.",
             "conflict_count": 0,
-            "evidence_count": evidence_count,
+            "evidence_count": 0,
             "independent_source_count": 0,
-            "evidence_type": "SOURCE_ONLY"
+            "evidence_type": "SOURCE_ONLY",
         }
-
-    # --------------------------------------------------------
-    # 6. No reliable support.
-    # --------------------------------------------------------
 
     return {
         "status": "UNRESOLVED",
         "confidence": 0.0,
-        "reason": (
-            "No reliable supporting evidence or "
-            "traceable source was found."
-        ),
+        "reason": "No reliable supporting evidence or traceable source was found.",
         "conflict_count": 0,
         "evidence_count": 0,
         "independent_source_count": 0,
-        "evidence_type": "NONE"
+        "evidence_type": "NONE",
     }
 
 
-def verify_claims(
-    claims: list,
-    conflicts: list
-):
-    """Verify every claim using conflicts and available evidence."""
-
-    verified_claims = []
+def verify_claims(claims: list, conflicts: list):
+    """Assess every claim while preserving its original fields."""
+    results = []
 
     for claim in claims:
-        verification = determine_verification_status(
-            claim,
-            conflicts
-        )
-
-        verified_claims.append({
+        verification = determine_verification_status(claim, conflicts)
+        results.append({
             **claim,
-            "verification": verification
+            "verification": verification,
         })
 
-    return verified_claims
+    return results
