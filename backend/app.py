@@ -1,4 +1,6 @@
-
+import json
+import os
+import hashlib
 
 import json
 
@@ -14,10 +16,14 @@ import fitz
 import pytesseract
 from PIL import Image
 
-pytesseract.pytesseract.tesseract_cmd = (
-    r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-)
+tesseract_path = os.getenv("TESSERACT_CMD")
 
+if tesseract_path:
+    pytesseract.pytesseract.tesseract_cmd = tesseract_path
+elif os.name == "nt":
+    pytesseract.pytesseract.tesseract_cmd = (
+        r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+    )
 from fastapi import FastAPI, UploadFile, File, HTTPException
 
 from fastapi.middleware.cors import CORSMiddleware

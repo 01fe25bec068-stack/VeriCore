@@ -4,3 +4,5 @@ python-multipart==0.0.20
 pymupdf==1.25.3
 python-dotenv==1.0.1
 anthropic==0.42.0
+pytesseract
+Pillow
