@@ -1,11 +1,5 @@
-"""Rule-based cross-document conflict detection for VeriCore.
-
-This module identifies candidate disagreements and potential limit violations.
-It does not decide which source is correct; a human reviewer should resolve them.
-"""
-
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 
 def normalize_text(text: str) -> str:
@@ -25,7 +19,7 @@ def _number(pattern: str, text: str) -> Optional[float]:
 
 def detect_property(text: str) -> Optional[str]:
     t = normalize_text(text)
-    # Check the more specific maintenance interval before generic properties.
+    # Check maintenance intervals before generic properties.
     if re.search(r"\b(inspect(?:ed|ion)?|service|maintenance|replace(?:ment)?)\b", t) and re.search(
         r"\b(every|each|per)\b|\b\d+(?:\.\d+)?\s*(?:operating\s*)?hours?\b", t
     ):
@@ -84,7 +78,13 @@ def parse_claim_fact(claim: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         value = _extract_interval(text)
         if value is None:
             return None
-        return {"property": prop, "role": "INTERVAL", "value": value, "document_id": claim.get("document_id"), "claim": claim}
+        return {
+            "property": prop,
+            "role": "INTERVAL",
+            "value": value,
+            "document_id": claim.get("document_id"),
+            "claim": claim,
+        }
 
     value = _extract_value_with_unit(text, prop)
     if value is None:
@@ -92,9 +92,16 @@ def parse_claim_fact(claim: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
     # Detect directional rules like "normal vibration below 4.5 mm/s RMS".
     direction_match = re.search(r"\b(above|below|exceed(?:s|ed)?)\b", lower)
-    if direction_match and ("normal" in lower or "threshold" in lower or "requires inspection" in lower or "require inspection" in lower):
+    if direction_match and any(term in lower for term in ("normal", "threshold", "requires inspection", "require inspection")):
         direction = "above" if direction_match.group(1).startswith("exceed") else direction_match.group(1)
-        return {"property": prop, "role": "THRESHOLD_RULE", "value": value, "direction": direction, "document_id": claim.get("document_id"), "claim": claim}
+        return {
+            "property": prop,
+            "role": "THRESHOLD_RULE",
+            "value": value,
+            "direction": direction,
+            "document_id": claim.get("document_id"),
+            "claim": claim,
+        }
 
     # Explicit maximum/minimum wording, plus generic "temperature limit: 95°C".
     if re.search(r"\b(max(?:imum)?|upper limit|maximum limit)\b", lower) or (
@@ -110,13 +117,21 @@ def parse_claim_fact(claim: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
     # Treat a plain "normal vibration below X" as a directional threshold.
     if "normal" in lower and re.search(r"\b(below|under|less than)\b", lower):
-        return {"property": prop, "role": "THRESHOLD_RULE", "value": value, "direction": "below", "document_id": claim.get("document_id"), "claim": claim}
+        return {
+            "property": prop,
+            "role": "THRESHOLD_RULE",
+            "value": value,
+            "direction": "below",
+            "document_id": claim.get("document_id"),
+            "claim": claim,
+        }
     return None
 
 
 def detect_pair_issue(fact_a: Dict[str, Any], fact_b: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if not fact_a or not fact_b or fact_a["property"] != fact_b["property"]:
         return None
+
     # Only compare across distinct known documents. If IDs are absent, use source/filename.
     a, b = fact_a.get("claim", {}), fact_b.get("claim", {})
     doc_a = fact_a.get("document_id") or a.get("source") or a.get("filename")
@@ -128,8 +143,40 @@ def detect_pair_issue(fact_a: Dict[str, Any], fact_b: Dict[str, Any]) -> Optiona
     va, vb = fact_a["value"], fact_b["value"]
     prop = fact_a["property"]
 
+    # Different intervals may be recommendations/conditional guidance rather than direct contradictions.
     if ra == rb == "INTERVAL" and va != vb:
-        return {"is_conflict": True, "status": "CONFLICT", "reason": f"Different documents specify different inspection/maintenance intervals ({va:g} vs {vb:g} hours).", "property": [prop], "values_a": [str(va)], "values_b": [str(vb)]}
+        text_a = normalize_text(a.get("text", a.get("claim_text", "")))
+        text_b = normalize_text(b.get("text", b.get("claim_text", "")))
+
+        recommendation_terms = ("recommend", "suggest", "advisory", "consider")
+        conditional_terms = (
+            "after heavy use", "under heavy use", "severe conditions",
+            "harsh conditions", "if necessary", "as needed",
+        )
+        is_recommendation = any(term in text_a or term in text_b for term in recommendation_terms)
+        is_conditional = any(term in text_a or term in text_b for term in conditional_terms)
+
+        if is_recommendation or is_conditional:
+            return {
+                "is_conflict": False,
+                "status": "DIFFERENCE_REQUIRING_REVIEW",
+                "reason": (
+                    f"Different maintenance intervals ({va:g} vs {vb:g} hours) "
+                    "may reflect a recommendation or operating condition; human review is required."
+                ),
+                "property": [prop],
+                "values_a": [str(va)],
+                "values_b": [str(vb)],
+            }
+
+        return {
+            "is_conflict": True,
+            "status": "CONFLICT",
+            "reason": f"Different documents specify different inspection/maintenance intervals ({va:g} vs {vb:g} hours).",
+            "property": [prop],
+            "values_a": [str(va)],
+            "values_b": [str(vb)],
+        }
 
     if ra == rb == "MAX_LIMIT" and va != vb:
         return {"is_conflict": True, "status": "CONFLICT", "reason": f"Different source documents specify different maximum limits for {prop} ({va:g} vs {vb:g}).", "property": [prop], "values_a": [str(va)], "values_b": [str(vb)]}
@@ -142,7 +189,11 @@ def detect_pair_issue(fact_a: Dict[str, Any], fact_b: Dict[str, Any]) -> Optiona
     observed, rule = (fact_a, fact_b) if ra == "OBSERVED" else ((fact_b, fact_a) if rb == "OBSERVED" else (None, None))
     if observed and rule:
         ov, rv = observed["value"], rule["value"]
-        violation = (rule["role"] == "MAX_LIMIT" and ov > rv) or (rule["role"] == "MIN_LIMIT" and ov < rv) or (rule["role"] == "THRESHOLD_RULE" and rule.get("direction") == "below" and ov > rv)
+        violation = (
+            (rule["role"] == "MAX_LIMIT" and ov > rv)
+            or (rule["role"] == "MIN_LIMIT" and ov < rv)
+            or (rule["role"] == "THRESHOLD_RULE" and rule.get("direction") == "below" and ov > rv)
+        )
         if violation:
             return {"is_conflict": True, "status": "POTENTIAL_VIOLATION", "reason": f"An observed {prop} value ({ov:g}) violates a documented limit/threshold ({rv:g}).", "property": [prop], "limit": rv, "observed_value": ov}
     return None

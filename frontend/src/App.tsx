@@ -1,3 +1,5 @@
+import jsPDF from "jspdf";
+import html2canvas from "html2canvas";
 import { useEffect, useRef, useState } from "react";
 import "./App.css";
 
@@ -2109,6 +2111,72 @@ function Report() {
       source.page || 1
     }`;
   }
+   
+  async function downloadReport() {
+    const element = document.querySelector(
+      ".report-document"
+    ) as HTMLElement | null;
+
+    if (!element) {
+      setError("No report available to download.");
+      return;
+    }
+
+    try {
+      setError("");
+
+      const canvas = await html2canvas(element, {
+        scale: 2,
+        backgroundColor: "#ffffff",
+        useCORS: true,
+      });
+
+      const pdf = new jsPDF("p", "mm", "a4");
+      const pageWidth = pdf.internal.pageSize.getWidth();
+      const pageHeight = pdf.internal.pageSize.getHeight();
+      const margin = 10;
+      const contentWidth = pageWidth - margin * 2;
+      const contentHeight =
+        (canvas.height * contentWidth) / canvas.width;
+      const printableHeight = pageHeight - margin * 2;
+      const image = canvas.toDataURL("image/png");
+
+      let remainingHeight = contentHeight;
+      let position = 0;
+
+      pdf.addImage(
+        image,
+        "PNG",
+        margin,
+        margin,
+        contentWidth,
+        contentHeight
+      );
+
+      remainingHeight -= printableHeight;
+
+      while (remainingHeight > 0) {
+        position -= printableHeight;
+        pdf.addPage();
+
+        pdf.addImage(
+          image,
+          "PNG",
+          margin,
+          position + margin,
+          contentWidth,
+          contentHeight
+        );
+
+        remainingHeight -= printableHeight;
+      }
+
+      pdf.save("VeriCore-Verified-Report.pdf");
+    } catch (err) {
+      console.error("Report download failed:", err);
+      setError("Could not download the report. Please try again.");
+    }
+  }
 
   return (
     <section>
@@ -2138,6 +2206,15 @@ function Report() {
           >
             Refresh
           </button>
+          
+  <button
+    className="btn secondary"
+    onClick={downloadReport}
+    disabled={loading || generating || !report}
+  >
+    Download Report
+  </button>
+
 
           <button
             className="btn primary"
