@@ -610,15 +610,25 @@ function App() {
       case "claims":
         return <Claims claims={claims} />;
 
-      case "conflicts":
-        return (
-          <Conflicts
-            conflicts={liveConflicts}
-            onOpen={(conflict) =>
-              setSelectedConflict(conflict)
-            }
-          />
-        );
+  case "conflicts":
+case "verification":
+  return (
+    <>
+      <Conflicts
+        conflicts={liveConflicts}
+        onOpen={(conflict) =>
+          setSelectedConflict(conflict)
+        }
+      />
+
+      <Verification
+        conflicts={liveConflicts}
+        usedEvidence={usedEvidence}
+        onUseEvidence={useEvidence}
+        onRecordDecision={recordDecision}
+      />
+    </>
+  );
 
       case "evidence":
         return (
@@ -629,12 +639,20 @@ function App() {
           />
         );
 
-      case "gaps":
+            case "gaps":
+      case "timeline":
         return (
-          <EvidenceGaps
-            conflicts={liveConflicts}
-            claims={claims}
-          />
+          <>
+            <EvidenceGaps
+              conflicts={liveConflicts}
+              claims={claims}
+            />
+
+            <Timeline
+              documents={documents}
+              claims={claims}
+            />
+          </>
         );
 
       case "timeline":
@@ -896,7 +914,7 @@ function Sidebar({
     },
     {
       id: "conflicts",
-      label: "Conflicts",
+      label: "Conflicts & Verification",
       icon: "△",
     },
     {
@@ -906,24 +924,16 @@ function Sidebar({
     },
     {
       id: "gaps",
-      label: "Evidence Gaps",
+      label: "Evidence Gaps & Timeline",
       icon: "○",
     },
-    {
-      id: "timeline",
-      label: "Timeline",
-      icon: "◷",
-    },
+   
     {
       id: "report",
       label: "Report",
       icon: "▤",
     },
-    {
-      id: "verification",
-      label: "Verification",
-      icon: "✓",
-    },
+    
     {
       id: "audit",
       label: "Audit Trail",
