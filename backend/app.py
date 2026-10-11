@@ -11,6 +11,12 @@ from datetime import datetime
 from pathlib import Path
 
 import fitz
+import pytesseract
+from PIL import Image
+
+pytesseract.pytesseract.tesseract_cmd = (
+    r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+)
 
 from fastapi import FastAPI, UploadFile, File, HTTPException
 
@@ -122,26 +128,52 @@ def calculate_hash(data: bytes) -> str:
 
     return hashlib.sha256(data).hexdigest()
 
+
 def extract_pdf(data: bytes):
-
     pages = []
-
     pdf = fitz.open(stream=data, filetype="pdf")
 
     try:
-
         for page_number, page in enumerate(pdf, start=1):
+            text = page.get_text("text").strip()
+            extraction_method = "text"
+
+            # Use OCR if normal extraction finds little text.
+            if len(text) < 30:
+                try:
+                    pix = page.get_pixmap(
+                        matrix=fitz.Matrix(2, 2),
+                        alpha=False
+                    )
+
+                    image = Image.frombytes(
+                        "RGB",
+                        [pix.width, pix.height],
+                        pix.samples
+                    )
+
+                    ocr_text = pytesseract.image_to_string(
+                        image,
+                        lang="eng",
+                        config="--psm 3"
+                    ).strip()
+
+                    if ocr_text:
+                        text = ocr_text
+                        extraction_method = "ocr"
+
+                except Exception as exc:
+                    print(
+                        f"OCR failed on page {page_number}: {exc}"
+                    )
 
             pages.append({
-
                 "page": page_number,
-
-                "text": page.get_text("text").strip()
-
+                "text": text,
+                "extraction_method": extraction_method
             })
 
     finally:
-
         pdf.close()
 
     return pages
@@ -1267,19 +1299,21 @@ def extract_document_claims(document_id: str):
 
     )
 
+   
+    # Return all claims for this document, including existing ones.
+    document_claims = [
+        claim for claim in claims
+        if claim.get("document_id") == document_id
+    ]
+
     return {
-
         "success": True,
-
         "document_id": document_id,
-
         "filename": document["filename"],
-
         "claims_extracted": len(saved),
-
-        "claims": saved
-
+        "claims": document_claims
     }
+
 
 # ============================================================
 

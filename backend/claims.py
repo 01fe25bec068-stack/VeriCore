@@ -40,49 +40,38 @@ def normalize_claim(text: str):
     return text.strip()
 
 
+
 def split_into_sentences(text: str):
     """
-    Split normal prose into sentences while keeping structured
-    system-log records as separate statements.
+    Split PDF/OCR text into statements while preserving
+    separate lines and normal sentence boundaries.
     """
-
     text = text.replace("\r\n", "\n").replace("\r", "\n")
 
-    lines = [line.strip() for line in text.split("\n") if line.strip()]
-
     parts = []
-    current = ""
 
-    for line in lines:
+    for line in text.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
 
-        # Timestamped system-log record
-        if re.match(r"^\d{2}:\d{2}:\d{2}\s*\|", line):
-            if current:
-                parts.append(current)
-                current = ""
-
+        # Keep timestamped system-log records separate.
+        if re.match(r"^\d{2}:\d{2}:\d{2}\s\|", line):
             parts.append(line)
             continue
 
-        # Normal continuation of the previous line
-        if current:
-            current += " " + line
-        else:
-            current = line
+        # Split a line at sentence-ending punctuation when
+        # followed by whitespace and another sentence.
+        sentences = re.split(r"(?<=[.!?])\s+", line)
 
-        # Complete normal sentence
-        if re.search(r"[.!?]$", current):
-            parts.append(current)
-            current = ""
+        for sentence in sentences:
+            sentence = normalize_claim(sentence.strip())
+            if sentence:
+                parts.append(sentence)
 
-    if current:
-        parts.append(current)
+    return parts
 
-    return [
-        normalize_claim(part)
-        for part in parts
-        if normalize_claim(part)
-    ]
+
 
 def is_heading_or_metadata(sentence: str):
     text = sentence.strip()
@@ -111,22 +100,27 @@ def is_heading_or_metadata(sentence: str):
     ):
         return True
 
-    # Short heading-like phrases without factual content
+    lower = text.lower()
+
+    # Keep factual specification statements even when OCR
+    # misreads a numeric value or unit.
+    factual_keywords = (
+        "temperature", "vibration", "pressure", "voltage",
+        "current", "power", "speed", "capacity", "frequency",
+        "maintenance", "inspection", "inspect", "interval",
+        "limit", "rating", "requires", "required", "must",
+        "should", "recommended", "warning", "critical",
+        "record", "check", "stop", "isolate"
+    )
+
+    if any(keyword in lower for keyword in factual_keywords):
+        return False
+
+    # Short phrases without factual content are likely headings.
     words = text.split()
 
-    if len(words) <= 5 and not re.search(
-        r"\d+(?:\.\d+)?\s*"
-        r"(?:°c|°f|v|kv|mv|a|ma|w|kw|hz|khz|mhz|rpm|"
-        r"bar|kpa|pa|hours?|hrs?|minutes?|mins?|seconds?|"
-        r"days?|months?|years?|%|mm|cm|m|kg|g)\b",
-        text.lower()
-    ):
-        if not re.search(
-            r"\b(is|are|was|were|requires|required|must|should|"
-            r"inspect|check|record|stop|isolate)\b",
-            text.lower()
-        ):
-            return True
+    if len(words) <= 5:
+        return True
 
     return False
 
@@ -157,6 +151,7 @@ def looks_like_claim(sentence: str):
     return has_number or has_claim_keyword
 
 
+
 def extract_claims_from_document(document: dict):
     extracted_claims = []
 
@@ -170,10 +165,20 @@ def extract_claims_from_document(document: dict):
         if not page_text.strip():
             continue
 
-        sentences = split_into_sentences(page_text)
+        # OCR may return multiple statements on one line.
+        # Split on newlines first, then use the existing
+        # sentence splitter on each line.
+        lines = [
+            line.strip()
+            for line in page_text.splitlines()
+            if line.strip()
+        ]
+
+        sentences = []
+        for line in lines:
+            sentences.extend(split_into_sentences(line))
 
         for sentence in sentences:
-
             if not looks_like_claim(sentence):
                 continue
 
