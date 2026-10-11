@@ -655,26 +655,12 @@ case "verification":
           </>
         );
 
-      case "timeline":
-        return (
-          <Timeline
-            documents={documents}
-            claims={claims}
-          />
-        );
+      
 
       case "report":
         return <Report />;
 
-      case "verification":
-        return (
-          <Verification
-            conflicts={liveConflicts}
-            usedEvidence={usedEvidence}
-            onUseEvidence={useEvidence}
-            onRecordDecision={recordDecision}
-          />
-        );
+      
 
       case "audit":
         return <AuditTrail events={auditEvents} />;
